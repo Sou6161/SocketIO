@@ -7,7 +7,7 @@ const io = require("socket.io")(http, {
     methods: ["GET", "POST"],
   },
 });
-  
+
 let rooms = {};
 
 io.on("connection", (socket) => {
