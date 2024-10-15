@@ -1,57 +1,64 @@
 const express = require("express");
 const app = express();
-const http = require("http").createServer(app);
-const io = require("socket.io")(http, {
+const server = require("http").createServer(app);
+const io = require("socket.io")(server, {
   cors: {
-    origin: "http://localhost:5173",
-    methods: ["GET", "POST"],
+    origin: "*",
   },
 });
 
 let rooms = {};
+const connectedUsers = new Set();
 
 io.on("connection", (socket) => {
-  console.log("New connection");
+  connectedUsers.add(socket.id);
+  console.log(`User connected: ${socket.id}`);
 
-  socket.on("createRoom", (roomId, playerName) => {
-    rooms[roomId] = {
-      players: [playerName],
-      started: false,
-    };
-    socket.join(roomId);
-    console.log(`Room ${roomId} created`);
+  socket.on("createRoom", () => {
+    console.log(`Room creation requested by: ${socket.id}`);
+    const roomCode = Math.random().toString(36).substr(2, 5).toUpperCase();
+    rooms[roomCode] = { players: [socket.id], messages: [] };
+    socket.join(roomCode);
+    socket.emit("roomCreated", roomCode);
+    console.log(`Room created: ${roomCode}`);
   });
 
-  socket.on("joinRoom", (roomId, playerName) => {
-    if (rooms[roomId] && rooms[roomId].players.length < 2) {
-      rooms[roomId].players.push(playerName);
-      socket.join(roomId);
-      io.to(roomId).emit("roomJoined");
-      console.log(`Player ${playerName} joined room ${roomId}`);
+  socket.on("joinRoom", (roomCode) => {
+    if (rooms[roomCode] && rooms[roomCode].players.length < 2) {
+      rooms[roomCode].players.push(socket.id);
+      socket.join(roomCode);
+      socket.emit("roomJoined", roomCode);
+      io.to(roomCode).emit("newPlayerJoined", socket.id);
     } else {
-      socket.emit("roomJoinError", "Room is full or does not exist");
+      socket.emit("roomFull");
+    }
+  });
+
+  socket.on("sendMessage", (roomCode, message) => {
+    if (rooms[roomCode]) {
+      rooms[roomCode].messages.push(message);
+      io.to(roomCode).emit("newMessage", message);
     }
   });
 
   socket.on("disconnect", () => {
-    console.log("Disconnected");
+    connectedUsers.delete(socket.id);
+    console.log(`User disconnected: ${socket.id}`);
+    for (const roomCode in rooms) {
+      if (rooms[roomCode].players.includes(socket.id)) {
+        rooms[roomCode].players = rooms[roomCode].players.filter(
+          (player) => player !== socket.id
+        );
+        io.to(roomCode).emit("playerLeft", socket.id);
+      }
+    }
   });
 
-  socket.on("makeMove", (roomId, move) => {
-    io.to(roomId).emit("opponentMove", move);
-  });
-
-  socket.on("gameStarted", (roomId) => {
-    rooms[roomId].started = true;
-    io.to(roomId).emit("gameStarted");
-  });
-
-  socket.on("gameEnded", (roomId) => {
-    rooms[roomId].started = false;
-    io.to(roomId).emit("gameEnded");
+  socket.on("error", (err) => {
+    console.log("Socket error:", err);
   });
 });
 
-http.listen(8080, () => {
-  console.log("Server listening on port 8080");
+server.listen(8080, () => {
+  console.log("Socket.IO server listening on port 8080");
 });
