@@ -1,64 +1,159 @@
-const express = require("express");
+const express = require('express');
+const http = require('http');
+const socketIo = require('socket.io');
+const cors = require('cors');
+
 const app = express();
-const server = require("http").createServer(app);
-const io = require("socket.io")(server, {
+app.use(cors());
+const server = http.createServer(app);
+const io = socketIo(server, {
   cors: {
-    origin: "*",
-  },
+    origin: "http://localhost:5173",
+    methods: ["GET", "POST"]
+  }
 });
 
-let rooms = {};
-const connectedUsers = new Set();
+const rooms = new Map();
 
-io.on("connection", (socket) => {
-  connectedUsers.add(socket.id);
-  console.log(`User connected: ${socket.id}`);
+function checkWinner(board) {
+  const lines = [
+    [0, 1, 2],
+    [3, 4, 5],
+    [6, 7, 8],
+    [0, 3, 6],
+    [1, 4, 7],
+    [2, 5, 8],
+    [0, 4, 8],
+    [2, 4, 6],
+  ];
 
-  socket.on("createRoom", () => {
-    console.log(`Room creation requested by: ${socket.id}`);
-    const roomCode = Math.random().toString(36).substr(2, 5).toUpperCase();
-    rooms[roomCode] = { players: [socket.id], messages: [] };
+  for (let i = 0; i < lines.length; i++) {
+    const [a, b, c] = lines[i];
+    if (board[a] && board[a] === board[b] && board[a] === board[c]) {
+      return board[a];
+    }
+  }
+
+  if (board.every(cell => cell !== null)) {
+    return 'draw';
+  }
+
+  return null;
+}
+
+io.on('connection', (socket) => {
+  console.log('New client connected');
+
+  socket.on('createRoom', (name) => {
+    const roomCode = Math.random().toString(36).substring(7);
+    rooms.set(roomCode, { 
+      players: [{ id: socket.id, name }], 
+      board: Array(9).fill(null), 
+      currentPlayer: 'X', 
+      moveCount: 0 
+    });
     socket.join(roomCode);
-    socket.emit("roomCreated", roomCode);
-    console.log(`Room created: ${roomCode}`);
+    socket.emit('roomCreated', roomCode);
   });
 
-  socket.on("joinRoom", (roomCode) => {
-    if (rooms[roomCode] && rooms[roomCode].players.length < 2) {
-      rooms[roomCode].players.push(socket.id);
-      socket.join(roomCode);
-      socket.emit("roomJoined", roomCode);
-      io.to(roomCode).emit("newPlayerJoined", socket.id);
+  socket.on('joinRoom', ({ name, room }) => {
+    if (rooms.has(room) && rooms.get(room).players.length < 2) {
+      const roomData = rooms.get(room);
+      roomData.players.push({ id: socket.id, name });
+      socket.join(room);
+      socket.emit('roomJoined', { room, opponentName: roomData.players[0].name });
+      socket.to(room).emit('opponentJoined', name);
+      io.to(room).emit('gameReady'); // Emit gameReady event to both clients
     } else {
-      socket.emit("roomFull");
+      socket.emit('joinError', 'Room not found or full');
     }
   });
 
-  socket.on("sendMessage", (roomCode, message) => {
-    if (rooms[roomCode]) {
-      rooms[roomCode].messages.push(message);
-      io.to(roomCode).emit("newMessage", message);
+  socket.on('startGame', (room) => {
+    if (rooms.has(room) && rooms.get(room).players.length === 2) {
+      const gameState = rooms.get(room);
+      gameState.board = Array(9).fill(null);
+      gameState.currentPlayer = 'X';
+      gameState.moveCount = 0;
+      gameState.timer = 30;
+      rooms.set(room, gameState);
+      io.to(room).emit('gameStarted');
+      startTimer(room);
     }
   });
 
-  socket.on("disconnect", () => {
-    connectedUsers.delete(socket.id);
-    console.log(`User disconnected: ${socket.id}`);
-    for (const roomCode in rooms) {
-      if (rooms[roomCode].players.includes(socket.id)) {
-        rooms[roomCode].players = rooms[roomCode].players.filter(
-          (player) => player !== socket.id
-        );
-        io.to(roomCode).emit("playerLeft", socket.id);
+  socket.on('move', ({ room, board }) => {
+    if (rooms.has(room)) {
+      const gameState = rooms.get(room);
+      gameState.board = board;
+      gameState.moveCount++;
+      gameState.currentPlayer = gameState.currentPlayer === 'X' ? 'O' : 'X';
+      gameState.timer = 30;
+      rooms.set(room, gameState);
+  
+      io.to(room).emit('updateBoard', board);
+      io.to(room).emit('updateTimer', gameState.timer);
+  
+      const winner = checkWinner(board);
+      if (winner) {
+        io.to(room).emit('gameOver', winner);
+      } else {
+        startTimer(room);
       }
     }
   });
 
-  socket.on("error", (err) => {
-    console.log("Socket error:", err);
+  socket.on('timeUp', ({ room }) => {
+    if (rooms.has(room)) {
+      const gameState = rooms.get(room);
+      gameState.currentPlayer = gameState.currentPlayer === 'X' ? 'O' : 'X';
+      gameState.timer = 30;
+      rooms.set(room, gameState);
+
+      io.to(room).emit('turnChange', gameState.currentPlayer);
+      io.to(room).emit('updateTimer', gameState.timer);
+      startTimer(room);
+    }
+  });
+
+  socket.on('disconnect', () => {
+    console.log('Client disconnected');
+    rooms.forEach((value, key) => {
+      const index = value.players.findIndex(player => player.id === socket.id);
+      if (index !== -1) {
+        value.players.splice(index, 1);
+        if (value.players.length === 0) {
+          rooms.delete(key);
+        } else {
+          io.to(key).emit('playerLeft', value.players[index].name);
+        }
+      }
+    });
   });
 });
 
-server.listen(8080, () => {
-  console.log("Socket.IO server listening on port 8080");
-});
+function startTimer(room) {
+  const interval = setInterval(() => {
+    if (rooms.has(room)) {
+      const gameState = rooms.get(room);
+      gameState.timer--;
+      rooms.set(room, gameState);
+      io.to(room).emit('updateTimer', gameState.timer);
+
+      if (gameState.timer <= 0) {
+        clearInterval(interval);
+        gameState.currentPlayer = gameState.currentPlayer === 'X' ? 'O' : 'X';
+        gameState.timer = 30;
+        rooms.set(room, gameState);
+        io.to(room).emit('updateBoard', gameState.board);
+        io.to(room).emit('updateTimer', gameState.timer);
+        startTimer(room);
+      }
+    } else {
+      clearInterval(interval);
+    }
+  }, 1000);
+}
+
+const PORT = process.env.PORT || 8080;
+server.listen(PORT, () => console.log(`Server running on port ${PORT}`));
