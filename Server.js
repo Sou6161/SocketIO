@@ -50,7 +50,9 @@ io.on('connection', (socket) => {
       players: [{ id: socket.id, name }], 
       board: Array(9).fill(null), 
       currentPlayer: 'X', 
-      moveCount: 0 
+      moveCount: 0,
+      timer: 20,
+      timerInterval: null
     });
     socket.join(roomCode);
     socket.emit('roomCreated', roomCode);
@@ -63,7 +65,7 @@ io.on('connection', (socket) => {
       socket.join(room);
       socket.emit('roomJoined', { room, opponentName: roomData.players[0].name });
       socket.to(room).emit('opponentJoined', name);
-      io.to(room).emit('gameReady'); // Emit gameReady event to both clients
+      io.to(room).emit('gameReady');
     } else {
       socket.emit('joinError', 'Room not found or full');
     }
@@ -75,7 +77,7 @@ io.on('connection', (socket) => {
       gameState.board = Array(9).fill(null);
       gameState.currentPlayer = 'X';
       gameState.moveCount = 0;
-      gameState.timer = 30;
+      gameState.timer = 20;
       rooms.set(room, gameState);
       io.to(room).emit('gameStarted');
       startTimer(room);
@@ -88,11 +90,11 @@ io.on('connection', (socket) => {
       gameState.board = board;
       gameState.moveCount++;
       gameState.currentPlayer = gameState.currentPlayer === 'X' ? 'O' : 'X';
-      gameState.timer = 30;
+      gameState.timer = 20;
+      clearInterval(gameState.timerInterval);
       rooms.set(room, gameState);
   
       io.to(room).emit('updateBoard', board);
-      io.to(room).emit('updateTimer', gameState.timer);
   
       const winner = checkWinner(board);
       if (winner) {
@@ -107,13 +109,27 @@ io.on('connection', (socket) => {
     if (rooms.has(room)) {
       const gameState = rooms.get(room);
       gameState.currentPlayer = gameState.currentPlayer === 'X' ? 'O' : 'X';
-      gameState.timer = 30;
+      gameState.timer = 20;
+      clearInterval(gameState.timerInterval);
       rooms.set(room, gameState);
 
       io.to(room).emit('turnChange', gameState.currentPlayer);
-      io.to(room).emit('updateTimer', gameState.timer);
       startTimer(room);
     }
+  });
+
+  socket.on("rematch", (data) => {
+    const room = rooms[data.room];
+    room.gameState = "initial";
+    room.board = Array(9).fill(null);
+    room.currentPlayer = "X";
+    room.winner = null;
+    room.moveCount = 0;
+    room.timer = 20;
+  
+    // Emit updated game state to both players
+    socket.to(data.room).emit("gameUpdated", room);
+    socket.in(data.room).emit("gameUpdated", room);
   });
 
   socket.on('disconnect', () => {
@@ -123,6 +139,7 @@ io.on('connection', (socket) => {
       if (index !== -1) {
         value.players.splice(index, 1);
         if (value.players.length === 0) {
+          clearInterval(value.timerInterval);
           rooms.delete(key);
         } else {
           io.to(key).emit('playerLeft', value.players[index].name);
@@ -133,27 +150,27 @@ io.on('connection', (socket) => {
 });
 
 function startTimer(room) {
-  const interval = setInterval(() => {
+  const gameState = rooms.get(room);
+  gameState.timerInterval = setInterval(() => {
     if (rooms.has(room)) {
-      const gameState = rooms.get(room);
       gameState.timer--;
       rooms.set(room, gameState);
       io.to(room).emit('updateTimer', gameState.timer);
 
       if (gameState.timer <= 0) {
-        clearInterval(interval);
+        clearInterval(gameState.timerInterval);
         gameState.currentPlayer = gameState.currentPlayer === 'X' ? 'O' : 'X';
-        gameState.timer = 30;
+        gameState.timer = 20;
         rooms.set(room, gameState);
-        io.to(room).emit('updateBoard', gameState.board);
+        io.to(room).emit('turnChange', gameState.currentPlayer);
         io.to(room).emit('updateTimer', gameState.timer);
         startTimer(room);
       }
     } else {
-      clearInterval(interval);
+      clearInterval(gameState.timerInterval);
     }
   }, 1000);
-}
+} 
 
 const PORT = process.env.PORT || 8080;
 server.listen(PORT, () => console.log(`Server running on port ${PORT}`));
