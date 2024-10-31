@@ -4,14 +4,20 @@ const socketIo = require("socket.io");
 const cors = require("cors");
 
 const app = express();
-app.use(cors());
+app.use(cors({
+  origin: true, // Allow all origins in development
+  credentials: true
+}));
 const server = http.createServer(app);
 const io = socketIo(server, {
   cors: {
-    origin: "http://localhost:5173",
+    origin: true, // Allow all origins in development
     methods: ["GET", "POST"],
+    credentials: true
   },
+  transports: ['websocket', 'polling']
 });
+
 
 const rooms = new Map();
 const users = new Map(); // Store user info
